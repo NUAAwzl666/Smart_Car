@@ -1,0 +1,38 @@
+# Keil MDK files
+*.uvguix.*
+*.bak
+*.ddk
+*.edk
+*.lst
+*.lnp
+*.mpf
+*.mpj
+*.obj
+*.omf
+*.axf
+*.htm
+*.sct
+*.map
+*.dep
+*.d
+*.crf
+*.o
+*.hex
+*.bin
+*.elf
+
+# Build output
+MDK-ARM/Smare_Car/
+MDK-ARM/DebugConfig/
+MDK-ARM/RTE/
+MDK-ARM/Listings/
+MDK-ARM/Objects/
+MDK-ARM/.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+*.uvoptx
+*.uvguix
