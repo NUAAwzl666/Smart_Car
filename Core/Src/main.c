@@ -65,6 +65,19 @@
 #define MOTOR_A_PWM_CHANNEL  TIM_CHANNEL_1  // PB6 - MOTOR_PWMA
 #define MOTOR_B_PWM_CHANNEL  TIM_CHANNEL_2  // PB7 - MOTOR_PWMB
 
+// 编码器引脚定义
+// 左编码器 - TIM2 (PA15=CH1, PB3=CH2)
+#define ENCODER_LEFT_TIM     htim2
+// 右编码器 - TIM3 (PA6=CH1, PA7=CH2) - 注意：如果PA6/PA7被传感器占用，需要调整
+#define ENCODER_RIGHT_TIM    htim3
+
+// 编码器参数
+#define ENCODER_RESOLUTION   11        // 编码器线数（根据实际编码器调整）
+#define GEAR_RATIO           30        // 减速比（根据实际电机调整）
+#define ENCODER_TOTAL_COUNT  (ENCODER_RESOLUTION * GEAR_RATIO * 4)  // 一圈总计数（4倍频）
+#define WHEEL_DIAMETER       65.0f     // 轮子直径(mm)
+#define WHEEL_PERIMETER      (WHEEL_DIAMETER * 3.14159f)  // 轮子周长(mm)
+
 // 速度参数（高速循迹优化）
 #define SPEED_MAX 999         
 #define SPEED_MIN 200
@@ -115,6 +128,16 @@ const int8_t position_weights[SENSOR_NUM] = {-70, -50, -30, -10, 10, 30, 50, 70}
 uint8_t test_mode = 0;          // 测试模式: 0=循迹, 1=电机测试
 uint32_t led_blink_interval = 1000; // LED闪烁间隔
 
+// 编码器变量
+int32_t encoder_left_count = 0;    // 左编码器计数
+int32_t encoder_right_count = 0;   // 右编码器计数
+int32_t encoder_left_last = 0;     // 上次左编码器计数
+int32_t encoder_right_last = 0;    // 上次右编码器计数
+float speed_left = 0.0f;           // 左轮速度 (mm/s)
+float speed_right = 0.0f;          // 右轮速度 (mm/s)
+float distance_left = 0.0f;        // 左轮行驶距离 (mm)
+float distance_right = 0.0f;       // 右轮行驶距离 (mm)
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -122,6 +145,10 @@ void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 
 void ReadSensors(void);
+void Encoder_Init(void);
+void Encoder_Read(void);
+void Encoder_Reset(void);
+void Encoder_Calculate_Speed(float delta_time);
 void Motor_Init(void);
 void Motor_SetSpeed(uint16_t motor_a_speed, uint16_t motor_b_speed);
 void Motor_Forward(uint16_t motor_a_speed, uint16_t motor_b_speed);
@@ -160,6 +187,86 @@ void ReadSensors(void)
         GPIO_PinState raw = HAL_GPIO_ReadPin(SENSOR_GPIO, sensor_pins[i]);
         sensor_data[i] = (raw == GPIO_PIN_SET) ? 0 : 1;  // 黑色->0, 白色->1
     }
+}
+
+/**
+  * @brief  编码器初始化
+  * @note   启动TIM2和TIM3的编码器模式
+  *         需要在CubeMX中配置TIM2和TIM3为Encoder Mode
+  * @retval None
+  */
+void Encoder_Init(void)
+{
+    // 启动编码器模式
+    HAL_TIM_Encoder_Start(&ENCODER_LEFT_TIM, TIM_CHANNEL_ALL);
+    HAL_TIM_Encoder_Start(&ENCODER_RIGHT_TIM, TIM_CHANNEL_ALL);
+    
+    // 复位计数器
+    __HAL_TIM_SET_COUNTER(&ENCODER_LEFT_TIM, 0);
+    __HAL_TIM_SET_COUNTER(&ENCODER_RIGHT_TIM, 0);
+}
+
+/**
+  * @brief  读取编码器计数值
+  * @retval None
+  */
+void Encoder_Read(void)
+{
+    // 读取编码器计数（16位定时器需要处理溢出）
+    encoder_left_count = (int16_t)__HAL_TIM_GET_COUNTER(&ENCODER_LEFT_TIM);
+    encoder_right_count = (int16_t)__HAL_TIM_GET_COUNTER(&ENCODER_RIGHT_TIM);
+    
+    // 计算行驶距离（累积）
+    distance_left += (encoder_left_count - encoder_left_last) * WHEEL_PERIMETER / ENCODER_TOTAL_COUNT;
+    distance_right += (encoder_right_count - encoder_right_last) * WHEEL_PERIMETER / ENCODER_TOTAL_COUNT;
+}
+
+/**
+  * @brief  复位编码器
+  * @retval None
+  */
+void Encoder_Reset(void)
+{
+    __HAL_TIM_SET_COUNTER(&ENCODER_LEFT_TIM, 0);
+    __HAL_TIM_SET_COUNTER(&ENCODER_RIGHT_TIM, 0);
+    
+    encoder_left_count = 0;
+    encoder_right_count = 0;
+    encoder_left_last = 0;
+    encoder_right_last = 0;
+    distance_left = 0.0f;
+    distance_right = 0.0f;
+    speed_left = 0.0f;
+    speed_right = 0.0f;
+}
+
+/**
+  * @brief  计算编码器速度
+  * @param  delta_time: 时间间隔 (秒)
+  * @retval None
+  */
+void Encoder_Calculate_Speed(float delta_time)
+{
+    // 读取当前编码器值
+    int32_t left_current = (int16_t)__HAL_TIM_GET_COUNTER(&ENCODER_LEFT_TIM);
+    int32_t right_current = (int16_t)__HAL_TIM_GET_COUNTER(&ENCODER_RIGHT_TIM);
+    
+    // 计算增量
+    int32_t left_delta = left_current - encoder_left_last;
+    int32_t right_delta = right_current - encoder_right_last;
+    
+    // 计算速度 (mm/s)
+    if (delta_time > 0.0f)
+    {
+        speed_left = (left_delta * WHEEL_PERIMETER / ENCODER_TOTAL_COUNT) / delta_time;
+        speed_right = (right_delta * WHEEL_PERIMETER / ENCODER_TOTAL_COUNT) / delta_time;
+    }
+    
+    // 更新上次值
+    encoder_left_last = left_current;
+    encoder_right_last = right_current;
+    encoder_left_count = left_current;
+    encoder_right_count = right_current;
 }
 
 /**
@@ -548,6 +655,9 @@ int main(void)
   // 初始化电机
   Motor_Init();
   
+  // 初始化编码器
+  Encoder_Init();
+  
   // 调试：确认TIM4配置
   // ARR值应该是9999或999
   uint32_t arr_value = __HAL_TIM_GET_AUTORELOAD(&htim4);
@@ -581,11 +691,23 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  
+  uint32_t last_speed_calc = HAL_GetTick(); // 用于速度计算的时间戳
+  
   while (1)
   {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    
+    // 每100ms计算一次速度
+    uint32_t current_time = HAL_GetTick();
+    if (current_time - last_speed_calc >= 100)
+    {
+        float delta_time = (current_time - last_speed_calc) / 1000.0f;
+        Encoder_Calculate_Speed(delta_time);
+        last_speed_calc = current_time;
+    }
     
     if (test_mode == 0) // 循迹模式
     {

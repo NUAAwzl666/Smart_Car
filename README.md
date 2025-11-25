@@ -6,8 +6,9 @@
 
 - STM32F103C8T6 最小系统板 × 1
 - 八路灰度传感器模块 × 1
-- 直流电机 × 2
+- 直流电机（带编码器）× 2
 - L298N 电机驱动模块 × 1
+- 光电编码器模块 × 2（可选，用于速度测量）
 - 小车底盘 × 1
 - 电池组（7.4V 或 12V）× 1
 - 杜邦线若干
@@ -51,6 +52,20 @@
 - **方案1**：L298N 的 5V 输出 → STM32 的 5V 引脚
 - **方案2**：独立 5V 电源给 STM32 供电
 - **重要**：务必将 L298N 的 GND 与 STM32 的 GND 连接（共地）
+
+### 4. 编码器模块连接（可选）
+
+| 编码器 | A相引脚 | B相引脚 | 说明 |
+|-------|---------|---------|------|
+| 左编码器 | PA15 (TIM2_CH1) | PB3 (TIM2_CH2) | 测量左轮速度 |
+| 右编码器 | PB4 (TIM3_CH1) | PB5 (TIM3_CH2) | 测量右轮速度 |
+| VCC | 5V | 编码器供电 |
+| GND | GND | 接地 |
+
+**注意**：
+- 如果PA6/PA7被灰度传感器占用，右编码器可改用PB4/PB5
+- 编码器模块通常输出AB两相信号，接入定时器的编码器接口
+- 需在代码中根据实际编码器参数调整 `ENCODER_RESOLUTION` 和 `GEAR_RATIO`
 
 ## ⚙️ STM32CubeMX 完整配置流程
 
@@ -133,7 +148,36 @@
 - 再次点击 PB6，选择 `TIM4_CH1`
 - 点击 PB7，选择 `TIM4_CH2`
 
-### 第六步：配置时钟树 (Clock Configuration)
+### 第六步：配置编码器定时器（可选）
+
+#### 6.1 配置 TIM2（左编码器）
+
+1. 点击 **Timers → TIM2**
+2. 设置：
+   - **Combined Channels**: Encoder Mode
+   - **Encoder Mode**: Encoder Mode TI1 and TI2
+   - **Parameter Settings**:
+     - **Counter Period (ARR)**: 65535 (16位定时器最大值)
+     - **Prescaler**: 0
+
+#### 6.2 配置 TIM3（右编码器）
+
+1. 点击 **Timers → TIM3**
+2. 设置：
+   - **Combined Channels**: Encoder Mode
+   - **Encoder Mode**: Encoder Mode TI1 and TI2
+   - **Parameter Settings**:
+     - **Counter Period (ARR)**: 65535
+     - **Prescaler**: 0
+
+#### 6.3 确认引脚分配
+
+- TIM2_CH1: **PA15** (左编码器A相)
+- TIM2_CH2: **PB3** (左编码器B相)
+- TIM3_CH1: **PB4** (右编码器A相)
+- TIM3_CH2: **PB5** (右编码器B相)
+
+### 第七步：配置时钟树 (Clock Configuration)
 
 1. 点击顶部 **Clock Configuration** 标签页
 2. 设置：
@@ -144,7 +188,18 @@
    - **APB2 Prescaler**: /1 (APB2 = 72MHz)
 3. 确认 **HCLK** 显示为 72 MHz
 
-### 第七步：配置 USART1 (可选，用于调试)
+### 第七步：配置时钟树 (Clock Configuration)
+
+1. 点击顶部 **Clock Configuration** 标签页
+2. 设置：
+   - **Input frequency (HSE)**: 8 MHz
+   - **PLLMUL**: x9 (使系统时钟达到 72MHz)
+   - **System Clock Mux**: PLLCLK
+   - **APB1 Prescaler**: /2 (APB1 = 36MHz)
+   - **APB2 Prescaler**: /1 (APB2 = 72MHz)
+3. 确认 **HCLK** 显示为 72 MHz
+
+### 第八步：配置 USART1 (可选，用于调试)
 
 1. 点击 **Connectivity → USART1**
 2. 设置：
@@ -154,9 +209,9 @@
    - **Parity**: None
    - **Stop Bits**: 1
 
-### 第八步：项目设置与代码生成
+### 第九步：项目设置与代码生成
 
-#### 8.1 项目管理设置
+#### 9.1 项目管理设置
 
 1. 点击顶部 **Project Manager** 标签页
 2. **Project** 子标签：
@@ -169,13 +224,13 @@
    - 勾选 `Keep User Code when re-generating`
    - 勾选 `Delete previously generated files when not re-generated`
 
-#### 8.2 生成代码
+#### 9.2 生成代码
 
 1. 点击右上角 **GENERATE CODE** 按钮
 2. 等待代码生成完成
 3. 点击 **Open Project** 打开 Keil 项目
 
-### 第九步：在 Keil 中编译
+### 第十步：在 Keil 中编译
 
 1. 在 Keil MDK 中打开生成的项目
 2. 找到 `main.c` 文件（项目已包含循迹代码）
@@ -202,14 +257,56 @@
 在 `main.c` 中可以调整以下参数：
 
 ```c
-// 速度参数 (0-1000)
-#define SPEED_NORMAL 600    // 直行速度
-#define SPEED_TURN 300      // 转弯时内侧轮速度
-#define SPEED_MAX 1000      // 最大速度
+// 速度参数 (0-999)
+#define SPEED_BASE 850        // 基础速度（85%）
+#define SPEED_STRAIGHT 950    // 直线最高速
+#define SPEED_SLOW 600        // 急弯减速
+#define SPEED_TURN_MIN 400    // 转弯最小速度
+
+// PID参数（用于高级循迹算法）
+#define KP 150                // 比例系数
+#define KD 80                 // 微分系数
+
+// 编码器参数（如已安装编码器）
+#define ENCODER_RESOLUTION   11        // 编码器线数
+#define GEAR_RATIO           30        // 减速比
+#define WHEEL_DIAMETER       65.0f     // 轮子直径(mm)
 
 // 主循环延时 (毫秒)
-HAL_Delay(10);  // 建议范围：5-20ms
+HAL_Delay(5);  // 高速循迹建议5ms
 ```
+
+## 🎛️ 编码器使用说明（可选功能）
+
+### 编码器变量
+
+项目已集成编码器支持，可用于：
+- 实时测量左右轮速度（mm/s）
+- 计算累计行驶距离（mm）
+- 实现速度闭环控制
+
+### 可用函数
+
+```c
+Encoder_Init();                          // 初始化编码器
+Encoder_Read();                          // 读取编码器计数
+Encoder_Calculate_Speed(0.1f);           // 计算速度（参数为时间间隔）
+Encoder_Reset();                         // 复位编码器
+
+// 全局变量
+extern float speed_left;                 // 左轮速度 (mm/s)
+extern float speed_right;                // 右轮速度 (mm/s)
+extern float distance_left;              // 左轮行驶距离 (mm)
+extern float distance_right;             // 右轮行驶距离 (mm)
+```
+
+### 编码器参数校准
+
+根据实际电机参数调整：
+1. 测量编码器线数（通常为11或13）
+2. 查看电机减速比（通常为30或48）
+3. 测量轮子直径（单位mm）
+4. 修改 `main.c` 中对应的宏定义
 
 ## 🔧 常见问题排查
 
@@ -272,9 +369,12 @@ HAL_Delay(10);  // 建议范围：5-20ms
 
 添加 OLED 屏幕显示传感器状态和速度信息。
 
-### 4. 速度测量
+### 4. 速度测量与编码器
 
-通过光电编码器测量实际速度，实现闭环控制。
+- **已集成**：项目已包含编码器驱动代码
+- 通过光电编码器测量实际速度，实现速度闭环控制
+- 可用于精确定位、里程计算等高级功能
+- 如需使用需在CubeMX中配置TIM2和TIM3为编码器模式
 
 ## 📚 参考资料
 
