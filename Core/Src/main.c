@@ -145,14 +145,20 @@ void LED_Blink_Slow(void);
 
 /**
   * @brief  读取8路灰度传感器数据
-  * @note   黑线返回0，白线返回1 (根据实际传感器调整)
+  * @note   赛道特征：中间白色，两边黑色边框
+  *         传感器硬件输出：浅色(白) -> 0(GPIO_PIN_RESET)，深色(黑) -> 1(GPIO_PIN_SET)
+  *         映射规则：白色赛道 -> 1，黑色边框 -> 0
   * @retval None
   */
 void ReadSensors(void)
 {
     for (int i = 0; i < SENSOR_NUM; i++)
     {
-        sensor_data[i] = HAL_GPIO_ReadPin(SENSOR_GPIO, sensor_pins[i]);
+        // HAL_GPIO_ReadPin 返回 GPIO_PIN_SET (1) 或 GPIO_PIN_RESET (0)
+        // 硬件：白色 -> 0(GPIO_PIN_RESET)，黑色 -> 1(GPIO_PIN_SET)
+        // 逻辑映射：白色赛道 -> 1，黑色边框 -> 0
+        GPIO_PinState raw = HAL_GPIO_ReadPin(SENSOR_GPIO, sensor_pins[i]);
+        sensor_data[i] = (raw == GPIO_PIN_SET) ? 0 : 1;  // 黑色->0, 白色->1
     }
 }
 
@@ -317,7 +323,9 @@ void Motor_DifferentialDrive(int16_t left_speed, int16_t right_speed)
 }
 
 /**
-  * @brief  计算黑线位置（加权平均）
+  * @brief  计算赛道中心位置（加权平均）
+  * @note   白色赛道=1，黑色边框=0
+  *         通过检测白色区域来判断小车在赛道的位置
   * @retval 位置值 (-70到70，0表示中心）
   */
 int16_t Calculate_Position(void)
@@ -325,10 +333,10 @@ int16_t Calculate_Position(void)
     int32_t weighted_sum = 0;
     uint8_t sensor_count = 0;
     
-    // 加权求和
+    // 加权求和 - 检测白色赛道
     for (int i = 0; i < SENSOR_NUM; i++)
     {
-        if (sensor_data[i] == 0) // 检测到黑线
+        if (sensor_data[i] == 1) // 检测到白色赛道
         {
             weighted_sum += position_weights[i];
             sensor_count++;
@@ -342,7 +350,7 @@ int16_t Calculate_Position(void)
     }
     else
     {
-        // 丢线处理：保持上次位置
+        // 全黑（完全偏离赛道）：保持上次位置进行修正
         return last_position;
     }
 }
@@ -397,7 +405,8 @@ void TrackLine_Advanced(void)
 /**
   * @brief  循迹算法 - 根据传感器数据控制电机
   * @note   传感器排列: S0 S1 S2 S3 S4 S5 S6 S7 (左->右)
-  *         黑线为0，白线为1
+  *         白色赛道为1，黑色边框为0
+  *         检测白色区域来保持在赛道中央
   * @retval None
   */
 void TrackLine(void)
@@ -406,27 +415,27 @@ void TrackLine(void)
     uint8_t left = sensor_data[0] + sensor_data[1] + sensor_data[2];
     uint8_t right = sensor_data[5] + sensor_data[6] + sensor_data[7];
     
-    if (sensor_data[3] == 0 && sensor_data[4] == 0) // 中心
+    if (sensor_data[3] == 1 && sensor_data[4] == 1) // 中心有白色赛道
     {
         Motor_Forward(SPEED_STRAIGHT, SPEED_STRAIGHT);
     }
-    else if (left == 0) // 左大弯
-    {
-        Motor_Forward(SPEED_TURN_MIN, SPEED_BASE);
-    }
-    else if (right == 0) // 右大弯
+    else if (left == 0) // 左侧全黑（左边框），需要右转
     {
         Motor_Forward(SPEED_BASE, SPEED_TURN_MIN);
     }
-    else if (sensor_data[2] == 0 || sensor_data[3] == 0) // 左偏
+    else if (right == 0) // 右侧全黑（右边框），需要左转
+    {
+        Motor_Forward(SPEED_TURN_MIN, SPEED_BASE);
+    }
+    else if (sensor_data[2] == 1 || sensor_data[3] == 1) // 白色偏左，需要左转
     {
         Motor_Forward(SPEED_SLOW, SPEED_BASE);
     }
-    else if (sensor_data[4] == 0 || sensor_data[5] == 0) // 右偏
+    else if (sensor_data[4] == 1 || sensor_data[5] == 1) // 白色偏右，需要右转
     {
         Motor_Forward(SPEED_BASE, SPEED_SLOW);
     }
-    else // 丢线
+    else // 异常情况
     {
         Motor_Forward(SPEED_BASE, SPEED_BASE);
     }
