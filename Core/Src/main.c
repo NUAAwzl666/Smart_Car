@@ -68,14 +68,15 @@
 // 编码器引脚定义
 // 左编码器 - TIM2 (PA15=CH1, PB3=CH2)
 #define ENCODER_LEFT_TIM     htim2
-// 右编码器 - TIM3 (PA6=CH1, PA7=CH2) - 注意：如果PA6/PA7被传感器占用，需要调整
+// 右编码器 - TIM3 (PB4=CH1, PB5=CH2) - 注意：如果PA6/PA7被传感器占用，需要调整
 #define ENCODER_RIGHT_TIM    htim3
 
-// 编码器参数
-#define ENCODER_RESOLUTION   11        // 编码器线数（根据实际编码器调整）
-#define GEAR_RATIO           30        // 减速比（根据实际电机调整）
-#define ENCODER_TOTAL_COUNT  (ENCODER_RESOLUTION * GEAR_RATIO * 4)  // 一圈总计数（4倍频）
-#define WHEEL_DIAMETER       65.0f     // 轮子直径(mm)
+// 编码器参数 - MG310电机
+#define ENCODER_RESOLUTION   13       // 霍尔/GMR编码器线数（MG310电机）
+#define GEAR_RATIO           20       // 减速比 1:20（MG310电机）
+#define MOTOR_RATED_RPM      400      // 额定转速 400±13% RPM
+#define ENCODER_TOTAL_COUNT  (ENCODER_RESOLUTION * GEAR_RATIO * 4)  // 一圈总计数1040（4倍频）
+#define WHEEL_DIAMETER       48.0f    // 轮子直径(mm)，根据实际测量调整
 #define WHEEL_PERIMETER      (WHEEL_DIAMETER * 3.14159f)  // 轮子周长(mm)
 
 // 速度参数（高速循迹优化）
@@ -87,8 +88,8 @@
 #define SPEED_TURN_MIN 400    // 转弯最小速度
 
 // PID参数
-#define KP 150                // 比例系数
-#define KD 80                 // 微分系数
+#define KP 120                // 比例系数（降低减少振荡）
+#define KD 120                // 微分系数（增大增强阻尼）
 
 // 板载LED（假设接在PC13，STM32F103C8常用引脚）
 #define LED_GPIO GPIOC
@@ -118,6 +119,7 @@ const uint16_t sensor_pins[SENSOR_NUM] = {
 // 循迹算法变量
 int16_t position = 0;           // 当前位置偏差 (-70到70)
 int16_t last_position = 0;      // 上次位置偏差
+int16_t filtered_position = 0;  // 滤波后的位置（用于平滑）
 int16_t position_derivative = 0; // 位置微分
 int16_t power_diff = 0;         // 左右轮速度差
 
@@ -471,16 +473,26 @@ void TrackLine_Advanced(void)
     // 计算当前位置
     position = Calculate_Position();
     
+    // 低通滤波：平滑位置信号（alpha=0.7，保留70%新值+30%旧值）
+    filtered_position = (position * 7 + filtered_position * 3) / 10;
+    
+    // 死区控制：直道微小偏差忽略，减少抖动
+    int16_t control_position = filtered_position;
+    if (control_position > -5 && control_position < 5)
+    {
+        control_position = 0;  // 认为在中心，不修正
+    }
+    
     // 计算微分
-    position_derivative = position - last_position;
-    last_position = position;
+    position_derivative = control_position - last_position;
+    last_position = control_position;
     
     // PID计算速度差
-    power_diff = (KP * position / 10) + (KD * position_derivative);
+    power_diff = (KP * control_position / 10) + (KD * position_derivative);
     
     // 根据偏差调整基础速度（直线加速，弯道减速）
     int16_t base_speed;
-    int16_t abs_pos = (position < 0) ? -position : position;
+    int16_t abs_pos = (control_position < 0) ? -control_position : control_position;
     
     if (abs_pos < 15) // 基本在直线上
     {
@@ -650,6 +662,8 @@ int main(void)
   MX_GPIO_Init();
   MX_TIM4_Init();
   MX_USART1_UART_Init();
+  MX_TIM2_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
 
   // 初始化电机
